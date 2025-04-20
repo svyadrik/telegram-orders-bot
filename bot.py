@@ -1,12 +1,19 @@
 import os
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CallbackQueryHandler, MessageHandler, CommandHandler, filters, ChannelPostHandler
 import logging
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    CallbackQueryHandler,
+    MessageHandler,
+    CommandHandler,
+    filters,
+)
 
 # Включаем логирование
 logging.basicConfig(level=logging.INFO)
 
-# Кнопка под каждым постом
+# Кнопка под каждым постом в канале
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.channel_post and update.channel_post.text:
         keyboard = [[InlineKeyboardButton("🛒 Замовити", callback_data="order")]]
@@ -20,22 +27,26 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             logging.error(f"Не вдалося додати кнопку: {e}")
 
-# Ответ на нажатие кнопки
+# Обработка нажатия кнопки
 async def order_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.message.reply_text("Введіть, будь ласка, кількість товару:")
-    # Далее можно добавить ConversationHandler, если хочешь собрать данные
 
-# Запуск бота с webhook
+# Запуск с webhook
 async def main():
     application = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
-    application.add_handler(ChannelPostHandler(channel_post_handler))
+    # Обработка постов из канала
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, channel_post_handler))
+
+    # Обработка кликов по кнопке
     application.add_handler(CallbackQueryHandler(order_handler, pattern="^order$"))
+
+    # /start команда
     application.add_handler(CommandHandler("start", lambda update, context: update.message.reply_text("Бот працює!")))
 
-    # Устанавливаем Webhook
+    # Устанавливаем webhook
     webhook_url = os.getenv("WEBHOOK_URL")
     await application.bot.set_webhook(url=webhook_url)
     await application.run_webhook(
