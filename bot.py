@@ -11,7 +11,6 @@ from telegram.ext import (
     filters,
     ContextTypes,
     ConversationHandler,
-    ChannelPostHandler,
 )
 
 import gspread
@@ -23,17 +22,17 @@ creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/credentia
 client = gspread.authorize(creds)
 sheet = client.open("Заказы Бутер").worksheet("Лист1")
 
-# --- Налаштування логування ---
+# --- Логи ---
 logging.basicConfig(level=logging.INFO)
 
 # --- Стани розмови ---
 WAITING_QUANTITY, WAITING_PHONE = range(2)
 
-# --- /start ---
+# --- Обробка /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Натисніть кнопку 'Замовити' під товаром в каналі, щоб оформити замовлення.")
 
-# --- Обробка кнопки "Замовити" ---
+# --- Обробка кнопки ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -49,7 +48,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Кількість ---
 async def handle_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["quantity"] = update.message.text
-    await update.message.reply_text("Залиште номер телефону для зв'язку")
+    await update.message.reply_text("Залиште, будь ласка, номер телефону для зв'язку")
     return WAITING_PHONE
 
 # --- Телефон ---
@@ -81,10 +80,10 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("❌ Скасувати", callback_data="cancel")
     ]]
     await context.bot.send_message(chat_id=admin_id, text=message, reply_markup=InlineKeyboardMarkup(keyboard))
-    await update.message.reply_text("Дякуємо! Ваше замовлення прийнято.")
+    await update.message.reply_text("Дякуємо! Ваше замовлення прийнято і буде оброблене найближчим часом.")
     return ConversationHandler.END
 
-# --- Адмін підтверджує ---
+# --- Відповідь адміністратора ---
 async def admin_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -94,20 +93,25 @@ async def admin_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "cancel":
         await query.edit_message_text("❌ Замовлення скасовано")
 
-# --- Обробка нових постів у каналі ---
-async def new_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.channel_post.caption:
-        keyboard = [[InlineKeyboardButton("Сказати", callback_data="order")]]
-        await context.bot.send_message(
-            chat_id=update.channel_post.chat_id,
-            text=f"<b>{update.channel_post.caption}</b>",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
+# --- Обробка постів з каналу ---
+async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    post = update.channel_post
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛒 Замовити", callback_data="order")]
+    ])
+    await context.bot.send_message(
+        chat_id=post.chat_id,
+        text=f"{post.caption or 'без опису'}",
+        reply_markup=keyboard,
+        message_thread_id=post.message_thread_id if hasattr(post, 'message_thread_id') else None
+    )
 
 # --- Основна функція ---
 def main():
-    app = Application.builder().token(os.getenv("BOT_TOKEN")).webhook_url(os.getenv("WEBHOOK_URL")).build()
+    TOKEN = os.getenv("BOT_TOKEN")
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+    application = Application.builder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(button_handler, pattern="^order$")],
@@ -118,12 +122,16 @@ def main():
         fallbacks=[]
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(admin_response, pattern="^(confirm|cancel)$"))
-    app.add_handler(ChannelPostHandler(new_channel_post))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(conv_handler)
+    application.add_handler(CallbackQueryHandler(admin_response, pattern="^(confirm|cancel)$"))
+    application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, handle_channel_post))
 
-    app.run_webhook(listen="0.0.0.0", port=int(os.environ.get("PORT", 10000)), webhook_url=os.environ["WEBHOOK_URL"])
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get('PORT', 10000)),
+        webhook_url=WEBHOOK_URL
+    )
 
 if __name__ == '__main__':
     main()
