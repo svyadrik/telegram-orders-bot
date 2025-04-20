@@ -2,38 +2,37 @@ import os
 import logging
 from datetime import datetime
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application,
     ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    MessageHandler,
     ContextTypes,
-    filters
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ConversationHandler,
 )
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# --- Авторизація Google Sheets ---
+# --- Google Sheets авторизация ---
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/credentials.json", scope)
 client = gspread.authorize(creds)
 sheet = client.open("Заказы Бутер").worksheet("Лист1")
 
-# --- Налаштування логування ---
+# --- Логирование ---
 logging.basicConfig(level=logging.INFO)
 
-# --- Стани розмови ---
+# --- Этапы диалога ---
 WAITING_QUANTITY, WAITING_PHONE = range(2)
 
-# --- Команда /start ---
+# --- Команда /start (если пользователь пишет вручную) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Натисніть кнопку 'Замовити' під товаром в каналі, щоб оформити замовлення.")
 
-# --- Кнопка «Замовити» ---
+# --- Кнопка "Замовити" под постом ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -46,19 +45,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.reply_text("Скільки одиниць ви хочете замовити?")
     return WAITING_QUANTITY
 
-# --- Обробка кількості ---
+# --- Количество ---
 async def handle_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["quantity"] = update.message.text
-    await update.message.reply_text("Залиште, будь ласка, номер телефону для зв'язку")
+    await update.message.reply_text("Залиште, будь ласка, номер телефону для зв'язку:")
     return WAITING_PHONE
 
-# --- Обробка телефону і запис до таблиці ---
+# --- Телефон и запись в таблицу ---
 async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["phone"] = update.message.text
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     context.user_data["datetime"] = now
 
-    # Додати рядок до Google Sheet
     sheet.append_row([
         now,
         context.user_data["username"],
@@ -70,9 +68,9 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Новий"
     ])
 
-    # Надіслати адміну
-    admin_id = 7333104516  # Замініть на ваш Telegram ID
-    message = (
+    # Отправка админу
+    admin_id = 7333104516
+    msg = (
         f"Новий заказ:\n"
         f"👤 {context.user_data['username']}\n"
         f"📦 {context.user_data['product']} — {context.user_data['quantity']} шт.\n"
@@ -82,11 +80,11 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("✅ Підтвердити", callback_data="confirm"),
         InlineKeyboardButton("❌ Скасувати", callback_data="cancel")
     ]]
-    await context.bot.send_message(chat_id=admin_id, text=message, reply_markup=InlineKeyboardMarkup(keyboard))
-    await update.message.reply_text("Дякуємо! Ваше замовлення прийнято і буде оброблене найближчим часом.")
+    await context.bot.send_message(chat_id=admin_id, text=msg, reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("Дякуємо! Ваше замовлення прийнято.")
     return ConversationHandler.END
 
-# --- Підтвердження/скасування адмiном ---
+# --- Ответ администратора ---
 async def admin_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -95,12 +93,14 @@ async def admin_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "cancel":
         await query.edit_message_text("❌ Замовлення скасовано")
 
-# --- Основна функція запуску бота через Webhook ---
-def main():
-    bot_token = os.getenv("BOT_TOKEN")
-    webhook_url = os.getenv("WEBHOOK_URL")
+# --- Запуск ---
+async def main():
+    from telegram.ext import Application
 
-    app = Application.builder().token(bot_token).build()
+    TOKEN = os.getenv("BOT_TOKEN")
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+    app = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(button_handler, pattern="^order$")],
@@ -115,11 +115,12 @@ def main():
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(admin_response, pattern="^(confirm|cancel)$"))
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=10000,
-        webhook_url=webhook_url
-    )
+    await app.bot.set_webhook(WEBHOOK_URL)
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await app.updater.idle()
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
