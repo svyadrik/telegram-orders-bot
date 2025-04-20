@@ -1,0 +1,1 @@
+Замените значения в .env перед загрузкой в Render. Добавьте google-credentials.json вручную!
