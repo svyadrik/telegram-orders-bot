@@ -1,84 +1,94 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+# bot.py
+import logging
 import os
+from datetime import datetime
 
-# Замовлення зберігаються у словниках
-orders = {bread: 0 for bread in ['Батон', 'Багет', 'Калач', 'Чіабатта']}
-user_orders = {}
-breads = list(orders.keys())
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CallbackQueryHandler, MessageHandler, CommandHandler, filters, ContextTypes
 
-# Стартова команда
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+# --- Налаштування ---
+TOKEN = os.getenv("BOT_TOKEN")
+SPREADSHEET_NAME = "Заказы Бутер"
+
+# Підключення до Google Sheets
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+client = gspread.authorize(creds)
+sheet = client.open(SPREADSHEET_NAME).sheet1
+
+# --- Логування ---
+logging.basicConfig(level=logging.INFO)
+
+# --- Обробка команди /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_name = user.full_name
+    await update.message.reply_text("Вітаю! Надішліть повідомлення з товаром, який хочете замовити.")
 
-    # Ініціалізація для нового користувача
-    if user_name not in user_orders:
-        user_orders[user_name] = {bread: 0 for bread in breads}
-
-    await update.message.reply_text(
-        text="👋 Вітаємо! Оберіть хліб та вкажіть кількість:",
-        reply_markup=generate_keyboard(user_name)
-    )
-
-# Генерація клавіатури
-def generate_keyboard(user_name):
-    keyboard = [
-        [InlineKeyboardButton("📦 Всього", callback_data="none"),
-         InlineKeyboardButton("🧾 Моє замовлення", callback_data="none")]
-    ]
-
-    for bread in breads:
-        total = orders.get(bread, 0)
-        user_count = user_orders[user_name].get(bread, 0)
-        keyboard.append([
-            InlineKeyboardButton(bread, callback_data=f"bread_{bread}"),
-            InlineKeyboardButton(str(total), callback_data=f"total_{bread}"),
-            InlineKeyboardButton("➕", callback_data=f"add_{bread}"),
-            InlineKeyboardButton(str(user_count), callback_data=f"my_order_{bread}"),
-            InlineKeyboardButton("➖", callback_data=f"remove_{bread}")
-        ])
-
-    keyboard.append([InlineKeyboardButton("✅ Підтвердити замовлення", callback_data="confirm_order")])
-    return InlineKeyboardMarkup(keyboard)
-
-# Обробка натискань кнопок
+# --- Обробка кнопки ---
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user_name = query.from_user.full_name
     await query.answer()
 
-    data = query.data
-    if "add_" in data:
-        bread = data.split("_")[1]
-        user_orders[user_name][bread] += 1
-        await query.edit_message_text("🔁 Оновлення...", reply_markup=generate_keyboard(user_name))
+    user = query.from_user
+    caption = query.message.caption or "Без опису"
 
-    elif "remove_" in data:
-        bread = data.split("_")[1]
-        if user_orders[user_name][bread] > 0:
-            user_orders[user_name][bread] -= 1
-        await query.edit_message_text("🔁 Оновлення...", reply_markup=generate_keyboard(user_name))
+    keyboard = [[InlineKeyboardButton("✅ Підтвердити замовлення", callback_data=f"confirm|{caption}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-    elif "confirm_order" in data:
-        for bread in breads:
-            orders[bread] += user_orders[user_name].get(bread, 0)
+    await query.message.reply_text(
+        f"Ви хочете замовити: *{caption}*",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
 
-        order_summary = "\n".join([f"{bread}: {user_orders[user_name][bread]} шт." for bread in breads])
-        await query.edit_message_text("✅ Замовлення підтверджено!")
-        await context.bot.send_message(chat_id=query.message.chat.id, text=f"🧾 Ваше замовлення:\n{order_summary}")
+# --- Підтвердження замовлення ---
+async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = query.from_user
 
-# Головна функція запуску
+    if query.data.startswith("confirm"):
+        _, product = query.data.split("|", 1)
+
+        now = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+        sheet.append_row([
+            datetime.today().strftime("%d.%m.%Y"),
+            user.full_name,
+            user.id,
+            product,
+            1,
+            "",
+            now,
+            "Новий"
+        ])
+
+        await query.answer("Замовлення прийнято!")
+        await query.edit_message_text("✅ Ваше замовлення збережено.")
+
+# --- Автоматичне додавання кнопки ---
+async def handle_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.channel_post:
+        post = update.channel_post
+        keyboard = [[InlineKeyboardButton("🛒 Замовити", callback_data="order")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await context.bot.send_message(
+            chat_id=post.chat_id,
+            text="⬇️ Натисніть кнопку, щоб замовити:",
+            reply_to_message_id=post.message_id,
+            reply_markup=reply_markup
+        )
+
+# --- Запуск ---
 def main():
-    TOKEN = os.getenv("BOT_TOKEN")
-    if not TOKEN:
-        print("❌ Не вказано BOT_TOKEN в .env файлі!")
-        return
-
     app = Application.builder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button))
-    print("✅ Бот запущено!")
+    app.add_handler(CallbackQueryHandler(confirm, pattern="^confirm"))
+    app.add_handler(CallbackQueryHandler(button, pattern="^order"))
+    app.add_handler(MessageHandler(filters.ALL, handle_post))
+
     app.run_polling()
 
 if __name__ == '__main__':
