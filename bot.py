@@ -1,83 +1,92 @@
-import logging
 import os
-
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+import logging
 from datetime import datetime
 
-# === Google Sheets setup ===
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
+
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+# --- Авторизація Google Sheets ---
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/credentials.json", scope)
 client = gspread.authorize(creds)
 sheet = client.open("Заказы Бутер").worksheet("Лист1")
 
-# === Logging ===
+# --- Налаштування логування ---
 logging.basicConfig(level=logging.INFO)
 
-# === Global variables ===
-ADMIN_ID = 7333104516
+# --- Стани розмови ---
+WAITING_QUANTITY, WAITING_PHONE = range(2)
 
-# === /start ===
+# --- Команда /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Нажмите кнопку 'Заказать' под товаром в канале, чтобы оформить заказ.")
+    await update.message.reply_text("Натисніть кнопку 'Замовити' під товаром в каналі, щоб оформити замовлення.")
 
-# === Обработка кнопки "Заказать" ===
+# --- Кнопка «Замовити» ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    product = query.message.caption or "Без опису"
+    product = query.message.caption or "без опису"
     context.user_data["product"] = product
     context.user_data["username"] = query.from_user.full_name
     context.user_data["user_id"] = query.from_user.id
 
-    keyboard = [[InlineKeyboardButton("1", callback_data="qty_1"),
-                 InlineKeyboardButton("2", callback_data="qty_2"),
-                 InlineKeyboardButton("3", callback_data="qty_3")]]
-    await query.message.reply_text("Скільки одиниць ви хочете замовити?", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.message.reply_text("Скільки одиниць ви хочете замовити?")
+    return WAITING_QUANTITY
 
-# === Выбор количества ===
-async def qty_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    qty = query.data.split("_")[1]
-    context.user_data["quantity"] = qty
-    await query.message.reply_text("Залиште, будь ласка, номер телефону для зв'язку")
+# --- Обробка кількості ---
+async def handle_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["quantity"] = update.message.text
+    await update.message.reply_text("Залиште, будь ласка, номер телефону для зв'язку")
+    return WAITING_PHONE
 
-# === Ввод телефона ===
-async def phone_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    phone = update.message.text
-    context.user_data["phone"] = phone
+# --- Обробка телефону і запис до таблиці ---
+async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["phone"] = update.message.text
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     context.user_data["datetime"] = now
 
+    # Додати рядок до Google Sheet
     sheet.append_row([
         now,
         context.user_data["username"],
         context.user_data["user_id"],
         context.user_data["product"],
         context.user_data["quantity"],
-        phone,
+        context.user_data["phone"],
         now,
         "Новий"
     ])
 
+    # Надіслати адміну
+    admin_id = 7333104516  # Замініть на ваш Telegram ID
     message = (
         f"Новий заказ:\n"
         f"👤 {context.user_data['username']}\n"
         f"📦 {context.user_data['product']} — {context.user_data['quantity']} шт.\n"
-        f"📞 {phone}"
+        f"📞 {context.user_data['phone']}"
     )
     keyboard = [[
         InlineKeyboardButton("✅ Підтвердити", callback_data="confirm"),
         InlineKeyboardButton("❌ Скасувати", callback_data="cancel")
     ]]
-    await context.bot.send_message(chat_id=ADMIN_ID, text=message, reply_markup=InlineKeyboardMarkup(keyboard))
-    await update.message.reply_text("Дякуємо! Ваше замовлення прийнято.")
+    await context.bot.send_message(chat_id=admin_id, text=message, reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("Дякуємо! Ваше замовлення прийнято і буде оброблене найближчим часом.")
+    return ConversationHandler.END
 
-# === Обработка подтверждения от админа ===
+# --- Підтвердження/скасування адмiном ---
 async def admin_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -86,32 +95,30 @@ async def admin_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "cancel":
         await query.edit_message_text("❌ Замовлення скасовано")
 
-# === Добавление кнопки к посту в канале ===
-async def new_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.channel_post:
-        post = update.channel_post
-        keyboard = [[InlineKeyboardButton("🛒 Замовити", callback_data="order")]]
-        await context.bot.edit_message_reply_markup(
-            chat_id=post.chat_id,
-            message_id=post.message_id,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-# === Main ===
+# --- Основна функція запуску бота через Webhook ---
 def main():
-    app = Application.builder().token(os.getenv("BOT_TOKEN")).webhook_url(os.getenv("WEBHOOK_URL")).build()
+    bot_token = os.getenv("BOT_TOKEN")
+    webhook_url = os.getenv("WEBHOOK_URL")
+
+    app = Application.builder().token(bot_token).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(button_handler, pattern="^order$")],
+        states={
+            WAITING_QUANTITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quantity)],
+            WAITING_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_phone)],
+        },
+        fallbacks=[]
+    )
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler, pattern="^order$"))
-    app.add_handler(CallbackQueryHandler(qty_chosen, pattern="^qty_\\d+$"))
+    app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(admin_response, pattern="^(confirm|cancel)$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, phone_handler))
-    app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, new_post_handler))
 
     app.run_webhook(
         listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=os.getenv("WEBHOOK_URL")
+        port=10000,
+        webhook_url=webhook_url
     )
 
 if __name__ == '__main__':
