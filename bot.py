@@ -2,20 +2,18 @@ import os
 import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
-    Application,
     ApplicationBuilder,
     ContextTypes,
     CallbackQueryHandler,
-    MessageHandler,
     CommandHandler,
+    MessageHandler,
     filters,
-    ChannelPostHandler
 )
 
 # Включаем логирование
 logging.basicConfig(level=logging.INFO)
 
-# Кнопка под каждым постом
+# Добавление кнопки под постом
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.channel_post and update.channel_post.text:
         keyboard = [[InlineKeyboardButton("🛒 Замовити", callback_data="order")]]
@@ -29,28 +27,37 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             logging.error(f"Не вдалося додати кнопку: {e}")
 
-# Ответ на нажатие кнопки
+# Обработка нажатия кнопки
 async def order_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.message.reply_text("Введіть, будь ласка, кількість товару:")
 
-# Запуск бота (БЕЗ asyncio.run)
-def main():
-    application = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
+# Команда /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Бот працює!")
 
-    application.add_handler(ChannelPostHandler(channel_post_handler))
+# Основной запуск приложения
+async def main():
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+    if not BOT_TOKEN or not WEBHOOK_URL:
+        raise ValueError("Перевірте змінні оточення BOT_TOKEN і WEBHOOK_URL")
+
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, channel_post_handler))
     application.add_handler(CallbackQueryHandler(order_handler, pattern="^order$"))
-    application.add_handler(CommandHandler("start", lambda update, context: update.message.reply_text("Бот працює!")))
+    application.add_handler(CommandHandler("start", start))
 
-    webhook_url = os.getenv("WEBHOOK_URL")
-
-    # Запускаем Webhook
-    application.run_webhook(
+    await application.bot.set_webhook(url=WEBHOOK_URL)
+    await application.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 10000)),
-        webhook_url=webhook_url
+        webhook_url=WEBHOOK_URL
     )
 
 if __name__ == '__main__':
-    main()
+    import asyncio
+    asyncio.run(main())
